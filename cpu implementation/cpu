@@ -1,0 +1,419 @@
+-- cpu.vhd: Simple 8-bit CPU (BrainFuck interpreter)
+-- Copyright (C) 2025 Brno University of Technology,
+-- Faculty of Information Technology
+-- Author(s): Jakub Horváth<xhorvaj00 AT stud.fit.vutbr.cz>
+--
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.std_logic_arith.all;
+use ieee.std_logic_unsigned.all;
+
+-- ----------------------------------------------------------------------------
+--                        Entity declaration
+-- ----------------------------------------------------------------------------
+entity cpu is
+ port (
+   CLK   : in std_logic;
+   RESET : in std_logic;
+   EN    : in std_logic;
+ 
+   DATA_ADDR  : out std_logic_vector(12 downto 0);
+   DATA_WDATA : out std_logic_vector(7 downto 0);
+   DATA_RDATA : in std_logic_vector(7 downto 0);
+   DATA_RDWR  : out std_logic;
+   DATA_EN    : out std_logic;
+   
+   IN_DATA   : in std_logic_vector(7 downto 0);
+   IN_VLD    : in std_logic;
+   IN_REQ    : out std_logic;
+   
+   OUT_DATA : out std_logic_vector(7 downto 0);
+   OUT_BUSY : in std_logic;
+   OUT_INV  : out std_logic;
+   OUT_WE   : out std_logic;
+
+   READY : out std_logic;
+   DONE  : out std_logic
+ );
+end cpu;
+
+-- ----------------------------------------------------------------------------
+--                      Architecture declaration
+-- ----------------------------------------------------------------------------
+architecture behavioral of cpu is
+
+ -- Registers
+ signal pc_reg  : std_logic_vector(12 downto 0);
+ signal ptr_reg : std_logic_vector(12 downto 0);
+ signal cnt_reg : std_logic_vector(7 downto 0);
+
+ -- Helper for hex
+ signal hex_mux_out : std_logic_vector(7 downto 0);
+ 
+
+ signal w_data_en : std_logic;
+ signal w_out_we  : std_logic;
+
+ -- States (FSM)
+ type t_state is (
+    s_idle,
+    s_init_search,
+    s_init_check,
+    s_fetch,
+    s_decode,
+    -- Pointer manipulation
+    s_inc_ptr,
+    s_dec_ptr,
+    -- Value manipulation
+    s_inc_val_read,  s_inc_val_write,
+    s_dec_val_read,  s_dec_val_write,
+    -- I/O operations
+    s_print_read,    s_print_do,
+    s_input_read,    s_input_write,
+    -- []
+    s_while_start_0, s_while_start_1, 
+    s_while_fwd_wait, s_while_fwd_check,
+    s_while_end_0,   s_while_end_1,   
+    s_while_bwd_wait, s_while_bwd_check,
+    -- ()
+    s_do_while_end_0, s_do_while_end_1, 
+    s_do_while_bwd_wait, s_do_while_bwd_check,
+    -- Hexadecimal input
+    s_hex_write,
+    -- Control states
+    s_halt,
+    s_nop
+ );
+ -- States
+ signal pstate : t_state;
+ signal nstate : t_state;
+
+begin
+
+ -- -----------------------------------------------------------------------
+ -- Process 1: Sequential Logic (Registers update)
+ -- -----------------------------------------------------------------------
+ p_regs: process(CLK, RESET)
+ begin
+    if RESET = '1' then
+        pstate <= s_idle;
+        pc_reg <= (others => '0');
+        ptr_reg <= (others => '0');
+        cnt_reg <= (others => '0');
+    elsif rising_edge(CLK) then
+        if EN = '1' then
+            pstate <= nstate;
+            
+            -- PC Register Logic
+            case pstate is
+                -- Increment PC
+                when s_inc_ptr | s_dec_ptr | s_nop | s_input_write | 
+                     s_inc_val_write | s_dec_val_write | s_hex_write =>
+                    pc_reg <= pc_reg + 1;
+                -- Print instrucion
+                -- Increment only if not busy
+                when s_print_do =>
+                    if OUT_BUSY = '0' then
+                        pc_reg <= pc_reg + 1;
+                    end if;
+
+                -- WHILE [ Start
+                when s_while_start_1 =>
+                   if DATA_RDATA = 0 then 
+                        pc_reg <= pc_reg + 1; 
+                   else 
+                        pc_reg <= pc_reg + 1; 
+                   end if;
+                
+                -- WHILE ] End
+                when s_while_end_1 =>
+                    if DATA_RDATA = 0 then 
+                        pc_reg <= pc_reg + 1; 
+                    else 
+                        pc_reg <= pc_reg - 1; 
+                    end if;
+
+                -- DO-WHILE ) End
+                when s_do_while_end_1 =>
+                    if DATA_RDATA = 0 then 
+                        pc_reg <= pc_reg + 1;
+                    else 
+                        pc_reg <= pc_reg - 1;
+                    end if;
+
+                -- Forward jump (looking for ']')
+                when s_while_fwd_check =>
+                    pc_reg <= pc_reg + 1;
+
+                -- Backward jump (looking for '[')
+                when s_while_bwd_check =>
+                    if (DATA_RDATA = X"5B" and cnt_reg = 1) then
+                        null;
+                    else
+                        pc_reg <= pc_reg - 1;
+                    end if;
+                -- Backward jump for Do-While (looking for '(')        
+                when s_do_while_bwd_check =>
+                    if (DATA_RDATA = X"28" and cnt_reg = 1) then
+                         null;
+                    else
+                         pc_reg <= pc_reg - 1;
+                    end if;
+
+                when others => 
+                    null;
+            end case;
+
+            -- PTR Register Logic
+            case pstate is
+                when s_init_check =>
+                    ptr_reg <= ptr_reg + 1;
+                when s_inc_ptr => 
+                    ptr_reg <= ptr_reg + 1;
+                when s_dec_ptr => 
+                    ptr_reg <= ptr_reg - 1;
+                when others => 
+                    null;
+            end case;
+
+            -- CNT Logic
+            case pstate is
+                when s_while_start_1 =>
+                    if DATA_RDATA = 0 then cnt_reg <= X"01"; end if;
+                when s_while_end_1 =>
+                    if DATA_RDATA /= 0 then cnt_reg <= X"01"; end if;
+                when s_do_while_end_1 =>
+                    if DATA_RDATA /= 0 then cnt_reg <= X"01"; end if;
+
+                -- Logic for FWD Check
+                when s_while_fwd_check =>
+                    if DATA_RDATA = X"5B" then
+                        cnt_reg <= cnt_reg + 1;
+                    elsif DATA_RDATA = X"5D" then
+                        cnt_reg <= cnt_reg - 1;
+                    end if;
+                    
+                -- Logic for BWD Check
+                when s_while_bwd_check =>
+                    if DATA_RDATA = X"5D" then
+                        cnt_reg <= cnt_reg + 1;
+                    elsif DATA_RDATA = X"5B" then
+                        cnt_reg <= cnt_reg - 1;
+                    end if;
+                
+                -- Logic for Do-While BWD Check
+                when s_do_while_bwd_check =>
+                    if DATA_RDATA = X"29" then
+                        cnt_reg <= cnt_reg + 1;
+                    elsif DATA_RDATA = X"28" then
+                        cnt_reg <= cnt_reg - 1;
+                    end if;
+
+                when others => 
+                    null;
+            end case;
+        end if;
+    end if;
+ end process;
+
+ -- -----------------------------------------------------------------------
+ -- Process 2: Hex Converter
+ -- -----------------------------------------------------------------------
+ hex_proc: process(DATA_RDATA)
+    variable temp_val : std_logic_vector(7 downto 0);
+ begin
+    hex_mux_out <= (others => '0');
+    temp_val := (others => '0');
+    -- Convert ASCII
+    if (DATA_RDATA >= X"30" and DATA_RDATA <= X"39") then
+        temp_val := DATA_RDATA - X"30";
+        hex_mux_out <= temp_val(3 downto 0) & "0000";
+    elsif (DATA_RDATA >= X"41" and DATA_RDATA <= X"46") then 
+        temp_val := DATA_RDATA - X"37";
+        hex_mux_out <= temp_val(3 downto 0) & "0000";
+    end if;
+ end process;
+
+ -- -----------------------------------------------------------------------
+ -- Process 3: FSM Next State Logic & Outputs
+ -- -----------------------------------------------------------------------
+ p_fsm_next: process(pstate, DATA_RDATA, IN_VLD, IN_DATA, OUT_BUSY, ptr_reg, pc_reg, cnt_reg, hex_mux_out)
+ begin
+    -- Default values
+    nstate <= pstate;
+    DATA_ADDR <= (others => '0');
+    w_data_en <= '0';
+    DATA_RDWR <= '1';
+    DATA_WDATA <= (others => '0');
+    IN_REQ <= '0';
+    w_out_we <= '0';
+    OUT_DATA <= (others => '0');
+    OUT_INV <= '0'; 
+    READY <= '0';
+    DONE <= '0';
+
+    case pstate is
+        when s_idle => 
+            nstate <= s_init_search;
+
+        when s_init_search =>
+            w_data_en <= '1'; DATA_ADDR <= ptr_reg;
+            nstate <= s_init_check;
+            
+        when s_init_check =>
+            if DATA_RDATA = X"40" then nstate <= s_fetch;
+            else nstate <= s_init_search; end if;
+
+        when s_fetch =>
+            READY <= '1'; w_data_en <= '1'; DATA_ADDR <= pc_reg;
+            nstate <= s_decode;
+
+        when s_decode =>
+            READY <= '1';
+            case DATA_RDATA is
+                when X"3E" => nstate <= s_inc_ptr;
+                when X"3C" => nstate <= s_dec_ptr;
+                when X"2B" => nstate <= s_inc_val_read;
+                when X"2D" => nstate <= s_dec_val_read;
+                when X"2E" => nstate <= s_print_read;
+                when X"2C" => nstate <= s_input_read;
+                when X"5B" => nstate <= s_while_start_0;
+                when X"5D" => nstate <= s_while_end_0;
+                when X"28" => nstate <= s_nop;
+                when X"29" => nstate <= s_do_while_end_0;
+                when X"40" => nstate <= s_halt;
+                when X"30"|X"31"|X"32"|X"33"|X"34"|X"35"|X"36"|X"37"|X"38"|X"39" => nstate <= s_hex_write;
+                when X"41"|X"42"|X"43"|X"44"|X"45"|X"46" => nstate <= s_hex_write;
+                when others => nstate <= s_nop;
+            end case;
+
+        when s_inc_ptr => READY <= '1'; nstate <= s_fetch;
+        when s_dec_ptr => READY <= '1'; nstate <= s_fetch;
+
+        when s_inc_val_read =>
+            READY <= '1'; w_data_en <= '1'; DATA_ADDR <= ptr_reg;
+            nstate <= s_inc_val_write;
+            
+        when s_inc_val_write =>
+            READY <= '1'; 
+            w_data_en <= '1'; DATA_ADDR <= ptr_reg; 
+            DATA_RDWR <= '0'; DATA_WDATA <= DATA_RDATA + 1;
+            nstate <= s_fetch;
+
+        when s_dec_val_read =>
+            READY <= '1'; w_data_en <= '1'; DATA_ADDR <= ptr_reg;
+            nstate <= s_dec_val_write;
+            
+        when s_dec_val_write =>
+            READY <= '1'; 
+            w_data_en <= '1'; DATA_ADDR <= ptr_reg; 
+            DATA_RDWR <= '0'; DATA_WDATA <= DATA_RDATA - 1;
+            nstate <= s_fetch;
+
+        when s_print_read =>
+            READY <= '1'; w_data_en <= '1'; DATA_ADDR <= ptr_reg;
+            nstate <= s_print_do;
+            
+        when s_print_do =>
+            READY <= '1';
+            if OUT_BUSY = '1' then
+                w_data_en <= '1'; DATA_ADDR <= ptr_reg; nstate <= s_print_do;
+            else
+                w_out_we <= '1'; OUT_DATA <= DATA_RDATA; nstate <= s_fetch;
+            end if;
+
+        when s_input_read =>
+            READY <= '1'; IN_REQ <= '1';
+            if IN_VLD = '1' then nstate <= s_input_write;
+            else nstate <= s_input_read; end if;
+            
+        when s_input_write =>
+            READY <= '1'; 
+            w_data_en <= '1'; DATA_ADDR <= ptr_reg; 
+            DATA_RDWR <= '0'; DATA_WDATA <= IN_DATA;
+            nstate <= s_fetch;
+
+        when s_while_start_0 =>
+            READY <= '1'; w_data_en <= '1'; DATA_ADDR <= ptr_reg;
+            nstate <= s_while_start_1;
+        when s_while_start_1 =>
+            READY <= '1';
+            if DATA_RDATA = 0 then nstate <= s_while_fwd_wait;
+            else nstate <= s_fetch; end if;
+        
+        when s_while_fwd_wait =>
+            READY <= '1'; w_data_en <= '1'; DATA_ADDR <= pc_reg;
+            nstate <= s_while_fwd_check;
+            
+        when s_while_fwd_check =>
+            READY <= '1';
+            if (DATA_RDATA = X"5D" and cnt_reg = 1) then 
+                nstate <= s_fetch;
+            else 
+                nstate <= s_while_fwd_wait; 
+            end if;
+
+        when s_while_end_0 =>
+            READY <= '1'; w_data_en <= '1'; DATA_ADDR <= ptr_reg;
+            nstate <= s_while_end_1;
+        when s_while_end_1 =>
+            READY <= '1';
+            if DATA_RDATA = 0 then nstate <= s_fetch;
+            else nstate <= s_while_bwd_wait; end if;
+
+        when s_while_bwd_wait =>
+            READY <= '1'; w_data_en <= '1'; DATA_ADDR <= pc_reg;
+            nstate <= s_while_bwd_check;
+            
+        when s_while_bwd_check =>
+            READY <= '1';
+            if (DATA_RDATA = X"5B" and cnt_reg = 1) then 
+                nstate <= s_fetch;
+            else 
+                nstate <= s_while_bwd_wait; 
+            end if;
+
+        when s_do_while_end_0 =>
+            READY <= '1'; w_data_en <= '1'; DATA_ADDR <= ptr_reg;
+            nstate <= s_do_while_end_1;
+        when s_do_while_end_1 =>
+            READY <= '1';
+            if DATA_RDATA = 0 then nstate <= s_fetch;
+            else nstate <= s_do_while_bwd_wait; end if;
+        
+        when s_do_while_bwd_wait =>
+            READY <= '1'; w_data_en <= '1'; DATA_ADDR <= pc_reg;
+            nstate <= s_do_while_bwd_check;
+            
+        when s_do_while_bwd_check =>
+            READY <= '1';
+            if (DATA_RDATA = X"28" and cnt_reg = 1) then 
+                nstate <= s_fetch;
+            else 
+                nstate <= s_do_while_bwd_wait; 
+            end if;
+
+        when s_hex_write =>
+            READY <= '1'; 
+            w_data_en <= '1'; DATA_ADDR <= ptr_reg; 
+            DATA_RDWR <= '0'; DATA_WDATA <= hex_mux_out;
+            nstate <= s_fetch;
+
+        when s_nop => READY <= '1'; nstate <= s_fetch;
+            
+        when s_halt => 
+            DONE <= '1'; READY <= '1';
+            nstate <= s_halt;
+            
+        when others => null;
+    end case;
+ end process;
+
+ -- -----------------------------------------------------------------------
+ -- Process 4: Output Gating
+ -- -----------------------------------------------------------------------
+ -- Prevents writing to memory or output when EN is low (processor stalled).
+ DATA_EN <= w_data_en and EN;
+ OUT_WE  <= w_out_we and EN;
+
+end behavioral;
