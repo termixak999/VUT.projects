@@ -1,0 +1,268 @@
+-- =============================================================================
+-- REALIZÁCIA GENERALIZÁCIE/ŠPECIALIZÁCIE (Vzťah Osoba -> Zamestnanec/Zákazník)
+-- Transformácia č. 1 pre generalizáciu/špecializáciu z prednášky transformace.pdf
+-- Separátne tabuľky pre nadtyp a podtypy.
+-- Identita podtypov je zabezpečená zdieľaným primárnym kľúčom, ktorý je 
+-- zároveň cudzím kľúčom smerujúcim na nadtyp.
+-- =============================================================================
+DROP TABLE Upomienka CASCADE CONSTRAINTS;
+DROP TABLE Obsahuje CASCADE CONSTRAINTS;
+DROP TABLE Prenajom CASCADE CONSTRAINTS;
+DROP TABLE Nosic CASCADE CONSTRAINTS;
+DROP TABLE Album_Skladba CASCADE CONSTRAINTS;
+DROP TABLE Album_Zaner CASCADE CONSTRAINTS;
+DROP TABLE Skladba_Zaner CASCADE CONSTRAINTS;
+DROP TABLE Album CASCADE CONSTRAINTS;
+DROP TABLE Skladba CASCADE CONSTRAINTS;
+DROP TABLE Zaner CASCADE CONSTRAINTS;
+DROP TABLE Zakaznik CASCADE CONSTRAINTS;
+DROP TABLE Zamestnanec CASCADE CONSTRAINTS;
+DROP TABLE Osoba CASCADE CONSTRAINTS;
+
+DROP SEQUENCE osoba_seq;
+DROP SEQUENCE album_id_seq;
+DROP SEQUENCE nosic_id_seq;
+DROP SEQUENCE skladba_id_seq;
+DROP SEQUENCE zaner_id_seq;
+DROP SEQUENCE prenajom_id_seq;
+DROP SEQUENCE upomienka_id_seq;
+
+
+
+CREATE SEQUENCE osoba_seq START WITH 1 INCREMENT BY 1;
+CREATE SEQUENCE album_id_seq START WITH 1 INCREMENT BY 1;
+CREATE SEQUENCE nosic_id_seq START WITH 1 INCREMENT BY 1;
+CREATE SEQUENCE skladba_id_seq START WITH 1 INCREMENT BY 1;
+CREATE SEQUENCE zaner_id_seq START WITH 1 INCREMENT BY 1;
+CREATE SEQUENCE prenajom_id_seq START WITH 1 INCREMENT BY 1;
+CREATE SEQUENCE upomienka_id_seq START WITH 1 INCREMENT BY 1;
+
+CREATE TABLE Osoba (
+    ID_osoby     NUMBER PRIMARY KEY,
+    Meno         VARCHAR(50) NOT NULL,
+    Priezvisko   VARCHAR(50) NOT NULL,
+    Adresa       VARCHAR(100),
+    Telefon      NUMBER(13),
+    Email        VARCHAR(50)
+);
+
+CREATE TABLE Zamestnanec (
+    ID_osoby     NUMBER PRIMARY KEY,
+    CONSTRAINT fk_zam_osoba FOREIGN KEY (ID_osoby) REFERENCES Osoba(ID_osoby) ON DELETE CASCADE
+);
+
+CREATE TABLE Zakaznik (
+    ID_osoby          NUMBER PRIMARY KEY,
+    Doklad_totoznosti VARCHAR(8) NOT NULL,
+    CONSTRAINT chk_doklad
+        CHECK (REGEXP_LIKE(Doklad_totoznosti, '^[A-Z]{2}[0-9]{6}$')),
+    CONSTRAINT fk_zak_osoba FOREIGN KEY (ID_osoby) REFERENCES Osoba(ID_osoby) ON DELETE CASCADE
+);
+
+CREATE TABLE Skladba (
+    ID_skladby    NUMBER PRIMARY KEY,
+    Nazov_skladby VARCHAR(100) NOT NULL,
+    Dlzka_skladby NUMBER,
+    Rok_vydania   NUMBER(4),
+    Interpret     VARCHAR(100),
+    Producent     VARCHAR(100)
+);
+
+CREATE TABLE Zaner (
+    ID_zanru NUMBER PRIMARY KEY,
+    Typ      VARCHAR(50) NOT NULL
+);
+
+CREATE TABLE Album (
+    ID_albumu    NUMBER PRIMARY KEY,
+    Nazov_albumu VARCHAR(100) NOT NULL,
+    Rok_vydania  NUMBER(4),
+    Interpreti   VARCHAR(100),
+    Vydavatel    VARCHAR(100),
+    Producent    VARCHAR(100)
+);
+
+CREATE TABLE Album_Skladba (
+    ID_albumu  NUMBER,
+    ID_skladby NUMBER,
+    PRIMARY KEY (ID_albumu, ID_skladby),
+    CONSTRAINT fk_as_album FOREIGN KEY (ID_albumu) REFERENCES Album(ID_albumu),
+    CONSTRAINT fk_as_skladba FOREIGN KEY (ID_skladby) REFERENCES Skladba(ID_skladby)
+);
+
+CREATE TABLE Album_Zaner (
+    ID_albumu NUMBER,
+    ID_zanru  NUMBER,
+    PRIMARY KEY (ID_albumu, ID_zanru),
+    CONSTRAINT fk_az_album FOREIGN KEY (ID_albumu) REFERENCES Album(ID_albumu),
+    CONSTRAINT fk_az_zaner FOREIGN KEY (ID_zanru) REFERENCES Zaner(ID_zanru)
+);
+
+CREATE TABLE Skladba_Zaner (
+    ID_skladby NUMBER,
+    ID_zanru   NUMBER,
+    PRIMARY KEY (ID_skladby, ID_zanru),
+    CONSTRAINT fk_sz_skladba FOREIGN KEY (ID_skladby) REFERENCES Skladba(ID_skladby),
+    CONSTRAINT fk_sz_zaner FOREIGN KEY (ID_zanru) REFERENCES Zaner(ID_zanru)
+);
+
+CREATE TABLE Nosic (
+    ID_nosica  NUMBER PRIMARY KEY,
+    ID_albumu  NUMBER NOT NULL,
+    Typ        VARCHAR(20),
+    Nazov      VARCHAR(100),
+    Kvalita    VARCHAR(50),
+    Dostupnost VARCHAR(20),
+    CONSTRAINT chk_nosic_dostupnost CHECK (Dostupnost IN ('dostupny','vypozicany')),
+    CONSTRAINT fk_nosic_album FOREIGN KEY (ID_albumu) REFERENCES Album(ID_albumu)
+);
+
+CREATE TABLE Prenajom (
+    ID_prenajmu      NUMBER PRIMARY KEY,
+    Datum_vytvorenia DATE DEFAULT SYSDATE,
+    ID_zakaznik      NUMBER NOT NULL, -- FK na Zákazníka
+    ID_zamestnanca   NUMBER NOT NULL, -- FK na Zamestnanca
+    CONSTRAINT fk_pren_zak FOREIGN KEY (ID_zakaznik) REFERENCES Zakaznik(ID_osoby),
+    CONSTRAINT fk_pren_zam FOREIGN KEY (ID_zamestnanca) REFERENCES Zamestnanec(ID_osoby)
+);
+
+CREATE TABLE Obsahuje (
+    ID_nosica                   NUMBER,
+    ID_prenajmu                 NUMBER,
+    Datum_vypozicania           DATE NOT NULL,
+    Ocakavany_datum_vratenia    DATE,
+    Datum_vratenia              DATE,
+    PRIMARY KEY (ID_prenajmu,ID_nosica),
+    CONSTRAINT chk_ocekavany_vratenia
+        CHECK (Ocakavany_datum_vratenia >= Datum_vypozicania),
+    CONSTRAINT fk_obs_nosic FOREIGN KEY (ID_nosica) REFERENCES Nosic(ID_nosica),
+    CONSTRAINT fk_obs_pren  FOREIGN KEY (ID_prenajmu) REFERENCES Prenajom(ID_prenajmu)
+);
+
+CREATE TABLE Upomienka (
+    ID_upomienky NUMBER,
+    ID_prenajmu  NUMBER,
+    Datum        DATE,
+    Cas          TIMESTAMP,
+    Text         VARCHAR(500),
+    PRIMARY KEY (ID_upomienky, ID_prenajmu),
+    CONSTRAINT fk_upom_pren FOREIGN KEY (ID_prenajmu) REFERENCES Prenajom(ID_prenajmu) ON DELETE CASCADE
+);
+
+CREATE OR REPLACE TRIGGER trg_osoba_pk
+BEFORE INSERT ON Osoba FOR EACH ROW
+BEGIN
+  IF :NEW.ID_osoby IS NULL THEN
+    :NEW.ID_osoby := osoba_seq.NEXTVAL;
+  END IF;
+END;
+/
+
+CREATE OR REPLACE TRIGGER trg_album_pk
+BEFORE INSERT ON Album FOR EACH ROW
+BEGIN
+  IF :NEW.ID_albumu IS NULL THEN
+    :NEW.ID_albumu := album_id_seq.NEXTVAL;
+  END IF;
+END;
+/
+
+CREATE OR REPLACE TRIGGER trg_prenajom_pk
+BEFORE INSERT ON Prenajom FOR EACH ROW
+BEGIN
+  IF :NEW.ID_prenajmu IS NULL THEN
+    :NEW.ID_prenajmu := prenajom_id_seq.NEXTVAL;
+  END IF;
+END;
+/
+
+CREATE OR REPLACE TRIGGER trg_nosic_pk
+BEFORE INSERT ON Nosic FOR EACH ROW
+BEGIN
+  IF :NEW.ID_nosica IS NULL THEN
+    :NEW.ID_nosica := nosic_id_seq.NEXTVAL;
+  END IF;
+END;
+/
+
+CREATE OR REPLACE TRIGGER trg_skladba_pk
+BEFORE INSERT ON Skladba FOR EACH ROW
+BEGIN
+  IF :NEW.ID_skladby IS NULL THEN
+        :NEW.ID_skladby:= skladba_id_seq.NEXTVAL;
+  END IF;
+END;
+/
+
+CREATE OR REPLACE TRIGGER trg_zaner_pk
+BEFORE INSERT ON Zaner FOR EACH ROW
+BEGIN
+  IF :NEW.ID_zanru IS NULL THEN
+        :NEW.ID_zanru:= zaner_id_seq.NEXTVAL;
+  END IF;
+END;
+/
+
+CREATE OR REPLACE TRIGGER trg_upomienka_pk
+BEFORE INSERT ON Upomienka FOR EACH ROW
+BEGIN
+    IF :NEW.ID_upomienky IS NULL THEN
+        :NEW.ID_upomienky:=upomienka_id_seq.NEXTVAL;
+    END IF;
+END;
+/
+
+INSERT INTO Osoba (Meno, Priezvisko, Adresa, Telefon, Email) 
+VALUES ('Michal', 'Mrakava', 'Trencin 12', 421905111222, 'michal@mail.sk'); 
+
+INSERT INTO Osoba (Meno, Priezvisko, Adresa, Telefon, Email) 
+VALUES ('Ondrej', 'Cagalinec', 'Selec 12', 421908333444, 'ondrej@email.sk'); 
+
+INSERT INTO Osoba (Meno, Priezvisko, Adresa, Telefon, Email) 
+VALUES ('Jakub', 'Horvath', 'Moravske Lieskove 12', 421907555666, 'jakub@email.sk'); 
+
+INSERT INTO Osoba (Meno, Priezvisko, Adresa, Telefon, Email) 
+VALUES ('Banan', 'Sprednasky', 'Brno 12', 421903777888, 'banan@email.sk'); 
+
+INSERT INTO Zamestnanec (ID_osoby) VALUES (1);
+INSERT INTO Zamestnanec (ID_osoby) VALUES (2);
+
+INSERT INTO Zakaznik (ID_osoby, Doklad_totoznosti) VALUES (3, 'AA123456'); -- Juraj
+INSERT INTO Zakaznik (ID_osoby, Doklad_totoznosti) VALUES (4, 'XY987654'); -- Lucia
+
+INSERT INTO Zaner (Typ) VALUES ('Rock');
+INSERT INTO Zaner (Typ) VALUES ('Jazz');
+INSERT INTO Zaner (Typ) VALUES ('Pop');
+
+INSERT INTO Skladba (Nazov_skladby, Dlzka_skladby, Interpret) VALUES ('song_1', 482, 'autor_1');
+INSERT INTO Skladba (Nazov_skladby, Dlzka_skladby, Interpret) VALUES ('song_3', 213, 'autor_1');
+INSERT INTO Skladba (Nazov_skladby, Dlzka_skladby, Interpret) VALUES ('song_2', 324, 'autor_2');
+
+INSERT INTO Album (Nazov_albumu, Rok_vydania, Interpreti) VALUES ('album_1', 1971, 'autor_1');
+INSERT INTO Album (Nazov_albumu, Rok_vydania, Interpreti) VALUES ('album_2', 1959, 'autor_2');
+
+INSERT INTO Album_Skladba (ID_albumu, ID_skladby) VALUES (1, 1);
+INSERT INTO Album_Skladba (ID_albumu, ID_skladby) VALUES (1, 3);
+INSERT INTO Album_Skladba (ID_albumu, ID_skladby) VALUES (2, 2);
+
+INSERT INTO Album_Zaner (ID_albumu, ID_zanru) VALUES (1, 1);
+INSERT INTO Album_Zaner (ID_albumu, ID_zanru) VALUES (2, 2);
+
+INSERT INTO Skladba_Zaner (ID_skladby, ID_zanru) VALUES (1, 1);
+INSERT INTO Skladba_Zaner (ID_skladby, ID_zanru) VALUES (2, 2);
+
+INSERT INTO Nosic (ID_albumu, Typ, Kvalita, Dostupnost) VALUES (1, 'MP3', 'dobra', 'dostupny');
+INSERT INTO Nosic (ID_albumu, Typ, Kvalita, Dostupnost) VALUES (1, 'CD', 'nova', 'vypozicany');
+INSERT INTO Nosic (ID_albumu, Typ, Kvalita, Dostupnost) VALUES (2, 'MP3', 'pouzita', 'dostupny');
+
+INSERT INTO Prenajom (ID_zakaznik, ID_zamestnanca) VALUES (3, 1);
+INSERT INTO Obsahuje (ID_nosica, ID_prenajmu, Datum_vypozicania, Ocakavany_datum_vratenia) VALUES (2, 1, SYSDATE - 10,SYSDATE-5);
+
+INSERT INTO Prenajom (ID_zakaznik, ID_zamestnanca) VALUES (4, 2);
+INSERT INTO Obsahuje (ID_nosica, ID_prenajmu, Datum_vypozicania, Ocakavany_datum_vratenia) VALUES (1, 2, SYSDATE - 7, SYSDATE-1);
+
+INSERT INTO Upomienka (ID_prenajmu, Text) VALUES (1, 'Test upozornenie na nevrateny nosic');
+
+INSERT INTO Upomienka (ID_prenajmu, Text) VALUES (1, 'Test upozornenie 2. na nevrateny nosic');
+
+COMMIT;
